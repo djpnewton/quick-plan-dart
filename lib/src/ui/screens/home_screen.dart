@@ -43,7 +43,6 @@ class _HomeFormState extends State<_HomeForm> {
   bool _csvMissing = false;
   bool _dateMissing = false;
   RunMode _mode = RunMode.import;
-  bool _deleteExisting = false;
   bool _autoCooldown = false;
   MeasurementSystem _measurementSystem = MeasurementSystem.metric;
   DateTime? _startDate;
@@ -201,6 +200,14 @@ class _HomeFormState extends State<_HomeForm> {
                   ),
                   value: RunMode.schedule,
                 ),
+                RadioListTile<RunMode>(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Delete workouts'),
+                  subtitle: const Text(
+                    'Delete all Garmin Connect workouts matching names in the CSV',
+                  ),
+                  value: RunMode.delete,
+                ),
               ],
             ),
           ),
@@ -242,12 +249,6 @@ class _HomeFormState extends State<_HomeForm> {
 
           // ── Options ───────────────────────────────────────────────────────
           _SectionHeader('Options'),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Delete existing workouts with the same name'),
-            value: _deleteExisting,
-            onChanged: (v) => setState(() => _deleteExisting = v ?? false),
-          ),
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text(
@@ -311,7 +312,6 @@ class _HomeFormState extends State<_HomeForm> {
       password: _passwordController.text,
       csvBytes: _csvBytes!,
       runMode: _mode,
-      deleteExisting: _deleteExisting,
       autoCooldown: _autoCooldown,
       measurementSystem: _measurementSystem,
       startDate: _startDate,

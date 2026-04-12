@@ -8,7 +8,7 @@ import '../core/model/measurement_system.dart';
 import '../core/model/weekly_plan.dart';
 import '../core/model/workout.dart';
 
-enum RunMode { import, schedule }
+enum RunMode { import, schedule, delete }
 
 /// Operation state shared between HomeScreen and RunScreen.
 /// Holds only what RunScreen needs to display; config is passed into run().
@@ -41,7 +41,6 @@ class RunState extends ChangeNotifier {
     required String password,
     required Uint8List csvBytes,
     required RunMode runMode,
-    required bool deleteExisting,
     required bool autoCooldown,
     required MeasurementSystem measurementSystem,
     required DateTime? startDate,
@@ -59,7 +58,6 @@ class RunState extends ChangeNotifier {
         password: password,
         csvBytes: csvBytes,
         runMode: runMode,
-        deleteExisting: deleteExisting,
         autoCooldown: autoCooldown,
         measurementSystem: measurementSystem,
         startDate: startDate,
@@ -79,7 +77,6 @@ class RunState extends ChangeNotifier {
     required String password,
     required Uint8List csvBytes,
     required RunMode runMode,
-    required bool deleteExisting,
     required bool autoCooldown,
     required MeasurementSystem measurementSystem,
     required DateTime? startDate,
@@ -106,20 +103,22 @@ class RunState extends ChangeNotifier {
     final client = http.Client();
     try {
       final GarminSession session;
-      final auth = GarminAuth(email, password, client);
+      final auth = GarminAuth(email, password, client, onLog: log);
       log('Logging in to Garmin Connect…');
       session = await auth.login();
       log('Login successful.');
 
       final api = GarminApi(client);
 
-      if (deleteExisting) {
+      if (runMode == RunMode.delete) {
         final deleteCount = await api.deleteWorkouts(
           workouts.map((w) => w.name).toList(),
           session,
           onLog: log,
         );
         log('$deleteCount workout(s) deleted.');
+        log('\nDone.');
+        return;
       }
 
       final garminWorkouts = await api.createWorkouts(
