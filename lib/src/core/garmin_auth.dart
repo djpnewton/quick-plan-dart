@@ -1,13 +1,16 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
 import 'garmin_models.dart';
+import 'http_decompress.dart';
 
-/// Handles authentication against Garmin Connect via a 6-step OAuth1→OAuth2
-/// flow. Caches the resulting [GarminSession] for the lifetime of this object.
+/// Handles authentication against Garmin Connect via the mobile JSON API +
+/// OAuth1→OAuth2 exchange flow. Uses browser-like headers on SSO endpoints
+/// to pass Cloudflare's bot checks.
 class GarminAuth {
   GarminAuth(this.email, this.password, this.client);
 
@@ -17,12 +20,57 @@ class GarminAuth {
 
   GarminSession? _cached;
 
-  static const _ssoBase = 'https://sso.garmin.com/sso';
-  static const _ssoEmbed = '$_ssoBase/embed';
+  static const _ssoBase = 'https://sso.garmin.com';
   static const _oauthApiBase =
       'https://connectapi.garmin.com/oauth-service/oauth';
-  static const _ssoUA = 'GCM-iOS-5.7.2.1';
-  static const _androidUA = 'com.garmin.android.apps.connectmobile';
+
+  // iOS client ID/service — matches actual Garmin Connect iOS app flow.
+  static const _clientId = 'GCM_IOS_DARK';
+  static const _serviceUrl = 'https://mobile.integration.garmin.com/gcm/ios';
+
+  // iOS app user agent for OAuth steps (connectapi.garmin.com is unaffected
+  // by Cloudflare, but headers must match the client ID being used).
+  static const _iosAppVersion = '5.23.1';
+  static const _iosOAuthUA = 'GCM-iOS-$_iosAppVersion.1';
+  static const _iosGarminUA =
+      'com.garmin.connect.mobile/$_iosAppVersion.1;;'
+      'Apple/iPhone14,7/;iOS/26.3.1;CFNetwork/1.0(Darwin/25.3.0)';
+
+  // Browser headers for the SSO page GET (navigation request).
+  static const _ssoNavUA =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) '
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+  static const Map<String, String> _ssoNavHeaders = {
+    'User-Agent': _ssoNavUA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-User': '?1',
+  };
+
+  // Headers for the JSON credential POST (JS fetch/XHR from the SPA).
+  static const Map<String, String> _ssoFetchHeaders = {
+    'User-Agent': _ssoNavUA,
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Dest': 'empty',
+    'Origin': _ssoBase,
+  };
+
+  // iOS app headers for connectapi.garmin.com OAuth steps.
+  static const Map<String, String> _iosOAuthHeaders = {
+    'User-Agent': _iosOAuthUA,
+    'X-app-ver': _iosAppVersion,
+    'X-Garmin-User-Agent': _iosGarminUA,
+  };
 
   /// Returns a valid [GarminSession], logging in if necessary.
   ///
@@ -34,128 +82,127 @@ class GarminAuth {
   }
 
   // ---------------------------------------------------------------------------
-  // 6-step login flow
+  // Login flow
   // ---------------------------------------------------------------------------
 
   Future<GarminSession> _performLogin() async {
-    final csrfRx = RegExp(r'name="_csrf"\s+value="(.+?)"');
-    final ticketRx = RegExp(r'embed\?ticket=([^"]+)');
-    final titleRx = RegExp(r'<title>(.+?)</title>');
-
-    final embedParams = _buildQS({
-      'id': 'gauth-widget',
-      'embedWidget': 'true',
-      'gauthHost': _ssoBase,
-    });
-    final signinParams = _buildQS({
-      'id': 'gauth-widget',
-      'embedWidget': 'true',
-      'gauthHost': _ssoEmbed,
-      'service': _ssoEmbed,
-      'source': _ssoEmbed,
-      'redirectAfterAccountLoginUrl': _ssoEmbed,
-      'redirectAfterAccountCreationUrl': _ssoEmbed,
+    final loginQS = _buildQS({
+      'clientId': _clientId,
+      'locale': 'en-US',
+      'service': _serviceUrl,
     });
 
-    // Step 1: GET /sso/embed – capture initial cookies
+    // Step 1: GET /mobile/sso/en/sign-in — sets Cloudflare / session cookies.
     var jar = <String, String>{};
     {
       final resp = await client.get(
-        Uri.parse('$_ssoEmbed?$embedParams'),
-        headers: {'User-Agent': _ssoUA},
+        Uri.parse('$_ssoBase/mobile/sso/en/sign-in?clientId=$_clientId'),
+        headers: _ssoNavHeaders,
       );
       jar = _mergeCookies(jar, resp);
     }
 
-    // Step 2: GET /sso/signin – extract CSRF token
-    String csrf;
-    {
-      final signinUrl = '$_ssoBase/signin?$signinParams';
-      final resp = await client.get(
-        Uri.parse(signinUrl),
-        headers: {
-          'User-Agent': _ssoUA,
-          'Cookie': _cookieHeader(jar),
-          'Referer': '$_ssoEmbed?$embedParams',
-        },
-      );
-      jar = _mergeCookies(jar, resp);
-      final m = csrfRx.firstMatch(resp.body);
-      if (m == null) {
-        throw Exception(
-          'Cannot find CSRF token in SSO signin page. '
-          'Check account or try again later. HTML: ${resp.body.substring(0, 400)}',
-        );
-      }
-      csrf = m.group(1)!;
-    }
+    // Simulate human time to fill in the login form (2–5 s random delay).
+    // Cloudflare WAF rate-limits bots that submit credentials immediately.
+    await Future.delayed(Duration(milliseconds: 2000 + Random().nextInt(3000)));
 
-    // Step 3: POST /sso/signin – submit credentials, extract ticket
+    // Step 2: POST /mobile/api/login — JSON credentials, returns service ticket.
     String ticket;
     {
-      final signinUrl = '$_ssoBase/signin?$signinParams';
-      final formBody = _buildQS({
-        'username': email,
-        'password': password,
-        'embed': 'true',
-        '_csrf': csrf,
-      });
       final resp = await client.post(
-        Uri.parse(signinUrl),
+        Uri.parse('$_ssoBase/mobile/api/login?$loginQS'),
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': _ssoUA,
+          ..._ssoFetchHeaders,
+          'Content-Type': 'application/json',
+          'Referer': '$_ssoBase/mobile/sso/en/sign-in?clientId=$_clientId',
           'Cookie': _cookieHeader(jar),
-          'Referer': signinUrl,
         },
-        body: formBody,
+        body: jsonEncode({
+          'username': email,
+          'password': password,
+          'rememberMe': false,
+          'captchaToken': '',
+        }),
       );
+      jar = _mergeCookies(jar, resp);
+
       if (resp.statusCode == 429) {
         throw Exception(
-          'Rate limited by Garmin SSO (429). Please wait a few minutes and try again.',
+          'Rate limited by Garmin SSO (429). '
+          'Wait a few minutes and try again.',
         );
       }
-      if (resp.body.contains('ACCOUNT_LOCKED')) {
+
+      final Map<String, dynamic> body;
+      try {
+        body = jsonDecode(decodeResponse(resp)) as Map<String, dynamic>;
+      } catch (_) {
+        final raw = decodeResponse(resp);
         throw Exception(
-          'Garmin account is locked. Too many failed login attempts. '
-          'Unlock it at connect.garmin.com and try again.',
+          'Unexpected non-JSON response from Garmin SSO '
+          '(status ${resp.statusCode}). Body: ${raw.substring(0, min(400, raw.length))}',
         );
       }
-      final tm = ticketRx.firstMatch(resp.body);
-      if (tm == null) {
-        final title = titleRx.firstMatch(resp.body)?.group(1) ?? 'unknown';
-        if (title.contains('MFA')) {
-          throw Exception(
-            'MFA is required but not supported. Disable 2FA on your Garmin account.',
-          );
-        }
+
+      final status = body['responseStatus'] as Map<String, dynamic>?;
+      final type = status?['type'] as String?;
+
+      if (type == 'MFA_REQUIRED') {
         throw Exception(
-          'Login failed. Check your email/password. (page title: $title)',
+          'Two-factor authentication is required. '
+          'Disable 2FA on your Garmin account to use this app.',
         );
       }
-      ticket = tm.group(1)!;
+
+      if (type != 'SUCCESSFUL') {
+        final msg = status?['message'] as String? ?? type ?? 'unknown';
+        throw Exception('Login failed: $msg. Check your email/password.');
+      }
+
+      final t = body['serviceTicketId'] as String?;
+      if (t == null || t.isEmpty) {
+        throw Exception(
+          'No service ticket in SSO response. Body: ${decodeResponse(resp)}',
+        );
+      }
+      ticket = t;
     }
 
-    // Step 4: Fetch OAuth1 consumer credentials from garth's S3 bucket
+    // Step 3 (best-effort): GET /portal/sso/embed — Cloudflare LB pinning.
+    try {
+      final resp = await client.get(
+        Uri.parse('$_ssoBase/portal/sso/embed'),
+        headers: {
+          ..._ssoNavHeaders,
+          'Sec-Fetch-Site': 'same-origin',
+          'Cookie': _cookieHeader(jar),
+        },
+      );
+      jar = _mergeCookies(jar, resp);
+    } catch (_) {
+      // Best-effort — ignore failures.
+    }
+
+    // Step 4: Fetch OAuth1 consumer key/secret from garth's S3 bucket.
     final String consumerKey;
     final String consumerSecret;
     {
       final resp = await client.get(
         Uri.parse('https://thegarth.s3.amazonaws.com/oauth_consumer.json'),
       );
-      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      final body = jsonDecode(decodeResponse(resp)) as Map<String, dynamic>;
       consumerKey = body['consumer_key'] as String;
       consumerSecret = body['consumer_secret'] as String;
     }
 
-    // Step 5: OAuth1-signed GET → exchange ticket for OAuth1 token
+    // Step 5: OAuth1-signed GET /preauthorized — exchange ticket for OAuth1 token.
     final String oauth1Token;
     final String oauth1Secret;
     {
-      final preauthorizedUrl = '$_oauthApiBase/preauthorized';
+      const preauthorizedUrl = '$_oauthApiBase/preauthorized';
       final queryParams = {
         'ticket': ticket,
-        'login-url': _ssoEmbed,
+        'login-url': _serviceUrl,
         'accepts-mfa-tokens': 'true',
       };
       final authHeader = _oauth1Header(
@@ -172,10 +219,10 @@ class GarminAuth {
       ).replace(queryParameters: queryParams);
       final resp = await client.get(
         uri,
-        headers: {'Authorization': authHeader, 'User-Agent': _androidUA},
+        headers: {..._iosOAuthHeaders, 'Authorization': authHeader},
       );
       final params = Map.fromEntries(
-        resp.body.split('&').map((pair) {
+        decodeResponse(resp).split('&').map((pair) {
           final kv = pair.split('=');
           return MapEntry(
             kv[0],
@@ -187,16 +234,19 @@ class GarminAuth {
       final sec = params['oauth_token_secret'];
       if (tok == null || sec == null) {
         throw Exception(
-          'Cannot parse OAuth1 token response. Body: ${resp.body}',
+          'Cannot parse OAuth1 token response. Body: ${decodeResponse(resp)}',
         );
       }
       oauth1Token = tok;
       oauth1Secret = sec;
     }
 
-    // Step 6: OAuth1-signed POST → exchange OAuth1 for OAuth2 Bearer
+    // Step 6: OAuth1-signed POST /exchange/user/2.0 — get OAuth2 Bearer token.
+    // The form body param `audience` is included in the OAuth1 signature base
+    // string per RFC 5849 §3.4.1.3.
     {
-      final exchangeUrl = '$_oauthApiBase/exchange/user/2.0';
+      const exchangeUrl = '$_oauthApiBase/exchange/user/2.0';
+      const exchangeBody = {'audience': 'GARMIN_CONNECT_MOBILE_IOS_DI'};
       final authHeader = _oauth1Header(
         method: 'POST',
         url: exchangeUrl,
@@ -204,21 +254,22 @@ class GarminAuth {
         consumerSecret: consumerSecret,
         tokenKey: oauth1Token,
         tokenSecret: oauth1Secret,
-        extraParams: {},
+        extraParams: exchangeBody,
       );
       final resp = await client.post(
         Uri.parse(exchangeUrl),
         headers: {
+          ..._iosOAuthHeaders,
           'Content-Type': 'application/x-www-form-urlencoded',
           'Authorization': authHeader,
-          'User-Agent': _androidUA,
         },
+        body: _buildQS(exchangeBody),
       );
-      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      final body = jsonDecode(decodeResponse(resp)) as Map<String, dynamic>;
       final accessToken = body['access_token'] as String?;
       if (accessToken == null || accessToken.isEmpty) {
         throw Exception(
-          'Cannot parse OAuth2 token response. Body: ${resp.body}',
+          'Cannot parse OAuth2 token response. Body: ${decodeResponse(resp)}',
         );
       }
       return GarminSession(accessToken);

@@ -105,12 +105,13 @@ class RunState extends ChangeNotifier {
 
     final client = http.Client();
     try {
+      final GarminSession session;
       final auth = GarminAuth(email, password, client);
-      final api = GarminApi(client);
-
-      log('Logging in to Garmin Connect\u2026');
-      final session = await auth.login();
+      log('Logging in to Garmin Connect…');
+      session = await auth.login();
       log('Login successful.');
+
+      final api = GarminApi(client);
 
       if (deleteExisting) {
         final deleteCount = await api.deleteWorkouts(
