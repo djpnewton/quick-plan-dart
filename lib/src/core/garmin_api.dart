@@ -31,6 +31,7 @@ class GarminApi {
     final results = <GarminWorkout>[];
     for (final workout in workouts) {
       await Future.delayed(const Duration(seconds: 1));
+      onLog?.call('  ${workout.name}…');
       final resp = await client.post(
         Uri.parse('$_workoutApiBase/workout'),
         headers: {
@@ -46,7 +47,6 @@ class GarminApi {
           throw Exception('Cannot parse workoutId from response: ${resp.body}');
         }
         final gw = GarminWorkout(workout.name, (id as num).toInt());
-        onLog?.call('  ${workout.name}');
         results.add(gw);
       } else {
         throw Exception(
@@ -63,8 +63,9 @@ class GarminApi {
     GarminSession session, {
     void Function(String)? onLog,
   }) async {
+    onLog?.call('\nFetching existing workouts\u2026');
     final wsMap = await _getWorkoutsMap(session);
-    onLog?.call('\nDeleting workouts:');
+    onLog?.call('Deleting workouts:');
 
     var count = 0;
     for (final name in names) {
@@ -72,17 +73,19 @@ class GarminApi {
       if (ids.isEmpty) continue;
 
       await Future.delayed(const Duration(seconds: 1));
-      final label = '$name -> [${ids.join(', ')}]';
       for (final id in ids) {
+        onLog?.call('  $name ($id)…');
+        await Future.delayed(const Duration(seconds: 1));
         final resp = await client.delete(
           Uri.parse('$_workoutApiBase/workout/$id'),
           headers: _sessionHeaders(session),
         );
         if (resp.statusCode == 204) {
-          onLog?.call('  $label');
           count++;
         } else {
-          onLog?.call('  Cannot delete workout: $label');
+          onLog?.call(
+            '  WARNING: could not delete $name ($id): HTTP ${resp.statusCode}',
+          );
         }
       }
     }
@@ -98,8 +101,9 @@ class GarminApi {
     onLog?.call('\nScheduling:');
     var count = 0;
     for (final (date, gw) in spec) {
-      await Future.delayed(const Duration(seconds: 1));
       final label = '${date.toIso8601String().substring(0, 10)} -> ${gw.name}';
+      onLog?.call('  $label…');
+      await Future.delayed(const Duration(seconds: 1));
       final body = jsonEncode({
         'date': date.toIso8601String().substring(0, 10),
       });

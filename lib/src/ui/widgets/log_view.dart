@@ -32,11 +32,9 @@ class _LogViewState extends State<LogView> {
 
   @override
   Widget build(BuildContext context) {
-    final state = context.select<RunState, (List<String>, bool)>(
-      (s) => (s.logLines, s.isFinished),
-    );
-    final lines = state.$1;
-    final isFinished = state.$2;
+    final state = context.watch<RunState>();
+    final lines = state.logLines;
+    final isFinished = state.isFinished;
 
     // Scroll to bottom when new lines arrive or when the run finishes
     // (finishing reshuffles the layout so maxScrollExtent changes).

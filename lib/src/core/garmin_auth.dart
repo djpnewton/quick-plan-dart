@@ -12,11 +12,12 @@ import 'http_decompress.dart';
 /// OAuth1→OAuth2 exchange flow. Uses browser-like headers on SSO endpoints
 /// to pass Cloudflare's bot checks.
 class GarminAuth {
-  GarminAuth(this.email, this.password, this.client);
+  GarminAuth(this.email, this.password, this.client, {this.onLog});
 
   final String email;
   final String password;
   final http.Client client;
+  final void Function(String)? onLog;
 
   GarminSession? _cached;
 
@@ -93,6 +94,7 @@ class GarminAuth {
     });
 
     // Step 1: GET /mobile/sso/en/sign-in — sets Cloudflare / session cookies.
+    onLog?.call('  [1/6] Fetching SSO sign-in page…');
     var jar = <String, String>{};
     {
       final resp = await client.get(
@@ -104,9 +106,11 @@ class GarminAuth {
 
     // Simulate human time to fill in the login form (2–5 s random delay).
     // Cloudflare WAF rate-limits bots that submit credentials immediately.
+    onLog?.call('  [2/6] Waiting before submitting credentials…');
     await Future.delayed(Duration(milliseconds: 2000 + Random().nextInt(3000)));
 
     // Step 2: POST /mobile/api/login — JSON credentials, returns service ticket.
+    onLog?.call('  [3/6] Submitting credentials…');
     String ticket;
     {
       final resp = await client.post(
@@ -169,6 +173,7 @@ class GarminAuth {
     }
 
     // Step 3 (best-effort): GET /portal/sso/embed — Cloudflare LB pinning.
+    onLog?.call('  [4/6] Fetching OAuth consumer credentials…');
     try {
       final resp = await client.get(
         Uri.parse('$_ssoBase/portal/sso/embed'),
@@ -196,6 +201,7 @@ class GarminAuth {
     }
 
     // Step 5: OAuth1-signed GET /preauthorized — exchange ticket for OAuth1 token.
+    onLog?.call('  [5/6] Exchanging service ticket for OAuth1 token…');
     final String oauth1Token;
     final String oauth1Secret;
     {
@@ -244,6 +250,7 @@ class GarminAuth {
     // Step 6: OAuth1-signed POST /exchange/user/2.0 — get OAuth2 Bearer token.
     // The form body param `audience` is included in the OAuth1 signature base
     // string per RFC 5849 §3.4.1.3.
+    onLog?.call('  [6/6] Exchanging OAuth1 token for Bearer token…');
     {
       const exchangeUrl = '$_oauthApiBase/exchange/user/2.0';
       const exchangeBody = {'audience': 'GARMIN_CONNECT_MOBILE_IOS_DI'};
