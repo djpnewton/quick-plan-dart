@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
+import 'cors_proxy.dart';
 import 'garmin_models.dart';
 import 'http_decompress.dart';
 
@@ -98,7 +99,7 @@ class GarminAuth {
     var jar = <String, String>{};
     {
       final resp = await client.get(
-        Uri.parse('$_ssoBase/mobile/sso/en/sign-in?clientId=$_clientId'),
+        proxyUri('$_ssoBase/mobile/sso/en/sign-in?clientId=$_clientId'),
         headers: _ssoNavHeaders,
       );
       jar = _mergeCookies(jar, resp);
@@ -114,7 +115,7 @@ class GarminAuth {
     String ticket;
     {
       final resp = await client.post(
-        Uri.parse('$_ssoBase/mobile/api/login?$loginQS'),
+        proxyUri('$_ssoBase/mobile/api/login?$loginQS'),
         headers: {
           ..._ssoFetchHeaders,
           'Content-Type': 'application/json',
@@ -176,7 +177,7 @@ class GarminAuth {
     onLog?.call('  [4/6] Fetching OAuth consumer credentials…');
     try {
       final resp = await client.get(
-        Uri.parse('$_ssoBase/portal/sso/embed'),
+        proxyUri('$_ssoBase/portal/sso/embed'),
         headers: {
           ..._ssoNavHeaders,
           'Sec-Fetch-Site': 'same-origin',
@@ -193,7 +194,7 @@ class GarminAuth {
     final String consumerSecret;
     {
       final resp = await client.get(
-        Uri.parse('https://thegarth.s3.amazonaws.com/oauth_consumer.json'),
+        proxyUri('https://thegarth.s3.amazonaws.com/oauth_consumer.json'),
       );
       final body = jsonDecode(decodeResponse(resp)) as Map<String, dynamic>;
       consumerKey = body['consumer_key'] as String;
@@ -220,9 +221,11 @@ class GarminAuth {
         tokenSecret: '',
         extraParams: queryParams,
       );
-      final uri = Uri.parse(
-        preauthorizedUrl,
-      ).replace(queryParameters: queryParams);
+      final uri = proxyUri(
+        Uri.parse(
+          preauthorizedUrl,
+        ).replace(queryParameters: queryParams).toString(),
+      );
       final resp = await client.get(
         uri,
         headers: {..._iosOAuthHeaders, 'Authorization': authHeader},
@@ -264,7 +267,7 @@ class GarminAuth {
         extraParams: exchangeBody,
       );
       final resp = await client.post(
-        Uri.parse(exchangeUrl),
+        proxyUri(exchangeUrl),
         headers: {
           ..._iosOAuthHeaders,
           'Content-Type': 'application/x-www-form-urlencoded',

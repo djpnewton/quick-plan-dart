@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'cors_proxy.dart';
 import 'garmin_models.dart';
 import 'model/workout.dart';
 
@@ -33,7 +34,7 @@ class GarminApi {
       await Future.delayed(const Duration(seconds: 1));
       onLog?.call('  ${workout.name}…');
       final resp = await client.post(
-        Uri.parse('$_workoutApiBase/workout'),
+        proxyUri('$_workoutApiBase/workout'),
         headers: {
           ..._sessionHeaders(session),
           'Content-Type': 'application/json',
@@ -77,7 +78,7 @@ class GarminApi {
         onLog?.call('  $name ($id)…');
         await Future.delayed(const Duration(seconds: 1));
         final resp = await client.delete(
-          Uri.parse('$_workoutApiBase/workout/$id'),
+          proxyUri('$_workoutApiBase/workout/$id'),
           headers: _sessionHeaders(session),
         );
         if (resp.statusCode == 204) {
@@ -108,7 +109,7 @@ class GarminApi {
         'date': date.toIso8601String().substring(0, 10),
       });
       final resp = await client.post(
-        Uri.parse('$_workoutApiBase/schedule/${gw.id}'),
+        proxyUri('$_workoutApiBase/schedule/${gw.id}'),
         headers: {
           ..._sessionHeaders(session),
           'Content-Type': 'application/json',
@@ -131,7 +132,7 @@ class GarminApi {
 
   Future<Map<String, List<int>>> _getWorkoutsMap(GarminSession session) async {
     final resp = await client.get(
-      Uri.parse('$_workoutApiBase/workouts?start=1&limit=9999'),
+      proxyUri('$_workoutApiBase/workouts?start=1&limit=9999'),
       headers: _sessionHeaders(session),
     );
     if (resp.statusCode != 200) {
